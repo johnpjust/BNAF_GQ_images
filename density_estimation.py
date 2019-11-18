@@ -21,13 +21,11 @@ import functools
 tf.random.set_seed(None)
 
 def img_preprocessing(imgcre, args):
-    rand_box_size = np.int(imgcre.shape[0]*args.rand_box)
-    rand_box = np.array([rand_box_size,rand_box_size,3])
     # rand_box = np.append(tf.cast(tf.multiply(tf.cast(imgcre.shape[:2], tf.float32),tf.constant(0.1)), tf.int32).numpy(), [3])
-    rand_crop = tf.image.random_crop(imgcre, rand_box)
+    rand_crop = tf.image.random_crop(imgcre, args.rand_box)
     rand_crop = tf.minimum(tf.nn.relu(rand_crop + tf.random.uniform(rand_crop.shape, -0.5, 0.5)), 255) ## dequantize
     if type(args.vh) is np.ndarray:
-        return tf.squeeze(tf.matmul(tf.reshape(rand_crop/128 - 1, [1,-1]), args.vh.T)[:,:100])
+        return tf.squeeze(tf.matmul(tf.reshape(rand_crop/128 - 1, [1,-1]), args.vh.T))
     else:
         return tf.reshape(rand_crop/128 - 1, [-1])
 
@@ -40,7 +38,7 @@ def img_load(filename, args):
     target_height = 470 - offset_height
     imgc = tf.image.crop_to_bounding_box(img, offset_height, offset_width, target_height, target_width)
     # # args.img_size = 0.25;  args.preserve_aspect_ratio = True; args.rand_box = 0.1
-    imresize_ = tf.cast(tf.multiply(tf.cast(imgc.shape[:2], tf.float32),tf.constant(args.img_size)), tf.int32)
+    imresize_ = tf.cast(tf.multiply(tf.cast(imgc.shape[:2], tf.float32), tf.constant(args.img_size)), tf.int32)
     imgcre = tf.image.resize(imgc, size=imresize_)
     return imgcre
 
@@ -53,77 +51,40 @@ def load_dataset(args):
     np.random.seed(args.manualSeed)
     random.seed(args.manualSeed)
 
-    if args.dataset == 'wheat':
-        pass
-    elif args.dataset == 'soy':
-        pass
-    elif args.dataset == 'corn':
-        trainval = glob.glob(r'D:\GQC_Images\GQ_Images\Corn_2017_2018/*.png')
-        # l = len(trainval)  # number of elements you need
-        # indices = random.sample(range(l), np.floor(args.valperc*l).astype(np.int))
-        # val = [trainval[i] for i in indices]
-        # train = np.delete(trainval, indices)
-        # test = val
-        # train = trainval
-        # val = trainval
-        # test = trainval
-        train = np.vstack([np.expand_dims(img_load(x,args),axis=0) for x in trainval])
-        cont_data = glob.glob(r'D:\GQC_Images\GQ_Images\test_images_broken/*.png')
-        cont_data = np.vstack([np.expand_dims(img_load(x,args),axis=0) for x in cont_data])
+    trainval = glob.glob(r'D:\GQC_Images\GQ_Images\Corn_2017_2018/*.png')
+    train_data = np.vstack([np.expand_dims(img_load(x,args),axis=0) for x in trainval])
+    cont_data = glob.glob(r'D:\GQC_Images\GQ_Images\test_images_broken/*.png')
+    cont_data = np.vstack([np.expand_dims(img_load(x,args),axis=0) for x in cont_data])
 
-    # elif args.dataset == 'MNIST':
-    #     train = read_idx(r'D:\publicDatasets\FMNIST\train-images-idx3-ubyte.gz')
-    #     train = train.reshape((train.shape[0],-1)) / 128. - 1.
-    #     train_idx = np.arange(train.shape[0])
-    #     np.random.shuffle(train_idx)
-    #     val = train[-int(args.p_val * train.shape[0]):]
-    #     train = train[:-int(args.p_val * train.shape[0])]
-    #     test = read_idx(r'D:\publicDatasets\FMNIST\t10k-images-idx3-ubyte.gz')
-    #     test = test.reshape((test.shape[0], -1)) / 128. - 1.
-    #
-    #     fnames_data = [r'D:\publicDatasets\MNIST\train-images-idx3-ubyte.gz',
-    #                    r'D:\publicDatasets\MNIST\t10k-images-idx3-ubyte.gz']
-    #     cont_data = []
-    #     for f in fnames_data:
-    #         cont_data.append(read_idx(f))
-    #     cont_data = np.concatenate(cont_data)
-    #     cont_data = cont_data.reshape((cont_data.shape[0], -1))/128. - 1.
-    #
-    #     # gmm = sklearn.mixture.GaussianMixture()
-    #     # gmm.fit(train)
-    #     # train, _ = gmm.sample(50000)
-    #
-    #     _, _, vh = scipy.linalg.svd(train, full_matrices=False)
-    #     train = np.matmul(train, vh.T)[:,:100]
-    #     val = np.matmul(val, vh.T)[:,:100]
-    #     test = np.matmul(test, vh.T)[:,:100]
-    #     cont_data = np.matmul(cont_data, vh.T)[:,:100]
+    args.rand_box_size = np.int(train_data[0].shape[0] * args.rand_box_init)
+    args.rand_box = np.array([args.rand_box_size, args.rand_box_size, 3])
+    args.n_dims = np.prod(args.rand_box)
 
     if args.vh:
         cliplist = []
         for n in range(10):
-            cliplist.append(np.vstack([img_preprocessing(x, args) for x in train]))
+            cliplist.append(np.vstack([img_preprocessing(x, args) for x in train_data]))
         svdmat = np.vstack(cliplist)
         _, _, args.vh = scipy.linalg.svd(svdmat, full_matrices=False)
 
     img_preprocessing_ = functools.partial(img_preprocessing, args=args)
     # img_preprocessing_ = dequantize
 
-    dataset_train = tf.data.Dataset.from_tensor_slices(train)#.float().to(args.device)
-    dataset_train = dataset_train.shuffle(buffer_size=len(train)).map(img_preprocessing_, num_parallel_calls=args.parallel).batch(batch_size=args.batch_dim).prefetch(buffer_size=args.prefetch_size)
+    dataset_train = tf.data.Dataset.from_tensor_slices(train_data)#.float().to(args.device)
+    dataset_train = dataset_train.shuffle(buffer_size=len(train_data)).map(img_preprocessing_, num_parallel_calls=args.parallel).batch(batch_size=args.batch_dim).prefetch(buffer_size=args.prefetch_size)
     # dataset_train = dataset_train.shuffle(buffer_size=len(train)).batch(batch_size=args.batch_dim).prefetch(buffer_size=args.prefetch_size)
 
-    dataset_valid = tf.data.Dataset.from_tensor_slices(train)#.float().to(args.device)
+    dataset_valid = tf.data.Dataset.from_tensor_slices(train_data)#.float().to(args.device)
     dataset_valid = dataset_valid.map(img_preprocessing_, num_parallel_calls=args.parallel).batch(batch_size=args.batch_dim*2).prefetch(buffer_size=args.prefetch_size)
     # dataset_valid = dataset_valid.batch(batch_size=args.batch_dim*2).prefetch(buffer_size=args.prefetch_size)
 
-    dataset_test = tf.data.Dataset.from_tensor_slices(train)#.float().to(args.device)
+    dataset_test = tf.data.Dataset.from_tensor_slices(train_data)#.float().to(args.device)
     dataset_test = dataset_test.map(img_preprocessing_, num_parallel_calls=args.parallel).batch(batch_size=args.batch_dim*2).prefetch(buffer_size=args.prefetch_size)
 
     dataset_cont = tf.data.Dataset.from_tensor_slices(cont_data)#.float().to(args.device)
     dataset_cont = dataset_cont.map(img_preprocessing_, num_parallel_calls=args.parallel).batch(batch_size=args.batch_dim*2).prefetch(buffer_size=args.prefetch_size)
 
-    args.n_dims = img_preprocessing_(train[0]).shape[0]
+    args.n_dims = img_preprocessing_(train_data[0]).shape[0]
 
     # args.n_dims = train.shape[1]
     return dataset_train, dataset_valid, dataset_test, dataset_cont
@@ -351,11 +312,6 @@ def main():
     with tf.device(args.device):
         model = create_model(args, verbose=True)
 
-    ### debug
-    # data_loader_train_ = tf.contrib.eager.Iterator(data_loader_train)
-    # x = data_loader_train_.get_next()
-    # a = model(x)
-
     ## tensorboard and saving
     writer = tf.summary.create_file_writer(os.path.join(args.tensorboard, args.load or args.path))
     writer.set_as_default()
@@ -384,6 +340,10 @@ def main():
     with tf.device(args.device):
         train(model, optimizer, scheduler, data_loader_train, data_loader_valid, data_loader_test, data_loader_cont, args)
 
+    ## save??
+    scheduler.save_model()
+    if type(args.vh) is np.ndarray:
+        np.save(args.path + '/vh.npy', args.vh)
 
 if __name__ == '__main__':
     main()

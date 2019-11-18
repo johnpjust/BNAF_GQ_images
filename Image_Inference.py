@@ -15,32 +15,30 @@ from scipy.optimize import fmin_l_bfgs_b
 
 import functools
 
-def img_heatmap(compute_img_log_p_x, filename, args):
-    imgcre = get_image(filename, args)
-    # imgcre = np.maximum(imgcre + np.random.uniform(-0.5, 0.5, imgcre.shape), 0)
-    rand_box_size = np.int(imgcre.shape[0] * args.rand_box)
-    rand_box = np.array([rand_box_size, rand_box_size, 3])
+def img_heatmap(compute_img_log_p_x, imgcre, args):
     # rand_box = np.append(tf.cast(tf.multiply(tf.cast(imgcre.shape[:2], tf.float32),tf.constant(0.1)), tf.int32).numpy(), [3])
-    rows = imgcre.shape[0]-rand_box[0]
-    cols = imgcre.shape[1] - rand_box[1]
+    rows = imgcre.shape[0]-args.rand_box[0]
+    cols = imgcre.shape[1] - args.rand_box[1]
     heatmap = np.zeros((np.int(rows/args.spacing), np.int(cols/args.spacing)))
-    im_breakup_array = np.zeros((np.int(cols/args.spacing),rand_box_size*rand_box_size*3), dtype=np.float32)
+    im_breakup_array = np.zeros((np.int(cols/args.spacing),args.rand_box_size*args.rand_box_size*3), dtype=np.float32)
     with tf.device(args.device):
-        for i in range(np.int(rows/args.spacing)*args.spacing):
-            if not i%args.spacing:
-                for j in range(np.int(cols/args.spacing)*args.spacing):
-                    if not j%args.spacing:
-                        im_breakup_array[np.int(j/args.spacing),:] = tf.reshape((tf.image.crop_to_bounding_box(imgcre, i, j, rand_box_size, rand_box_size)/128 - 1) / args.stdev, [-1]).numpy()
-                heatmap[np.int(i/args.spacing), :] = compute_img_log_p_x(x_mb=im_breakup_array).numpy()
-    # heatmap = np.zeros((rows, cols))
-    # im_breakup_array = np.zeros((cols, rand_box_size*rand_box_size*3), dtype=np.float32)
-    # for i in range(rows):
-    #     for j in range(cols):
-    #         im_breakup_array[j,:] = tf.reshape((tf.image.crop_to_bounding_box(imgcre, i, j, rand_box_size, rand_box_size) - args.mean) / args.stdev, [-1]).numpy()
-    #     heatmap[i, :] = compute_img_log_p_x(x_mb=im_breakup_array).numpy()
+        if type(args.vh) is not np.ndarray:
+            for i in range(np.int(rows/args.spacing)*args.spacing):
+                if not i%args.spacing:
+                    for j in range(np.int(cols/args.spacing)*args.spacing):
+                        if not j%args.spacing:
+                            im_breakup_array[np.int(j/args.spacing),:] = tf.reshape(tf.image.crop_to_bounding_box(imgcre, i, j, args.rand_box_size, args.rand_box_size)/128 - 1, [-1]).numpy()
+                    heatmap[np.int(i/args.spacing), :] = compute_img_log_p_x(x_mb=im_breakup_array).numpy()
+        else:
+            for i in range(np.int(rows/args.spacing)*args.spacing):
+                if not i%args.spacing:
+                    for j in range(np.int(cols/args.spacing)*args.spacing):
+                        if not j%args.spacing:
+                            im_breakup_array[np.int(j/args.spacing),:] = tf.squeeze(tf.matmul(tf.reshape(tf.image.crop_to_bounding_box(imgcre, i, j, args.rand_box_size, args.rand_box_size)/128 - 1, [1, -1]), args.vh.T)).numpy()
+                    heatmap[np.int(i/args.spacing), :] = compute_img_log_p_x(x_mb=im_breakup_array).numpy()
     return heatmap
 
-def get_image(filename, args):
+def img_load(filename, args):
     img_raw = tf.io.read_file(filename)
     img = tf.image.decode_image(img_raw)
     offset_width = 50
@@ -49,8 +47,9 @@ def get_image(filename, args):
     target_height = 470 - offset_height
     imgc = tf.image.crop_to_bounding_box(img, offset_height, offset_width, target_height, target_width)
     # # args.img_size = 0.25;  args.preserve_aspect_ratio = True; args.rand_box = 0.1
-    imresize_ = tf.cast(tf.multiply(tf.cast(imgc.shape[:2], tf.float32), tf.constant(args.img_size)), tf.int32)
-    return tf.image.resize(imgc, size=imresize_)
+    imresize_ = tf.cast(tf.multiply(tf.cast(imgc.shape[:2], tf.float32),tf.constant(args.img_size)), tf.int32)
+    imgcre = tf.image.resize(imgc, size=imresize_)
+    return imgcre
 
 def get_dims(filename, args):
     img_raw = tf.io.read_file(filename)
@@ -116,23 +115,13 @@ def create_model(args, verbose=False):
         # params = np.sum(np.sum(p.numpy() != 0) if len(p.numpy().shape) > 1 else p.numpy().shape
         #              for p in model.trainable_variables)[0]
 
-    # if verbose:
-    #     print('{}'.format(model))
-    #     print('Parameters={}, NAF/BNAF={:.2f}/{:.2f}, n_dims={}'.format(params,
-    #         NAF_PARAMS[args.dataset][0] / params, NAF_PARAMS[args.dataset][1] / params, args.n_dims))
-
-    # if args.save and not args.load:
-    #     with open(os.path.join(args.load or args.path, 'results.txt'), 'a') as f:
-    #         print('Parameters={}, NAF/BNAF={:.2f}/{:.2f}, n_dims={}'.format(params,
-    #             NAF_PARAMS[args.dataset][0] / params, NAF_PARAMS[args.dataset][1] / params, args.n_dims), file=f)
-
     return model
 
 
 def load_model(args, root, load_start_epoch=False):
     # def f():
     print('Loading model..')
-    root.restore(tf.train.latest_checkpoint(args.load or args.path))
+    root.restore(tf.train.latest_checkpoint(args.load))
     # root.restore(os.path.join(args.load or args.path, 'checkpoint'))
     # if load_start_epoch:
     #     args.start_epoch = tf.train.get_global_step().numpy()
@@ -172,96 +161,52 @@ def main():
 
     args = parser_()
     args.device = '/gpu:0'  # '/gpu:0'
-    args.dataset = 'corn'  # 'gq_ms_wheat_johnson'#'gq_ms_wheat_johnson' #['gas', 'bsds300', 'hepmass', 'miniboone', 'power']
-    args.learning_rate = np.float32(1e-2)
-    args.batch_dim = 50
+    args.batch_dim = 500
     args.clip_norm = 0.1
-    args.epochs = 5000
-    args.patience = 10
-    args.cooldown = 10
-    args.decay = 0.5
-    args.min_lr = 5e-4
     args.flows = 6
     args.layers = 1
     args.hidden_dim = 12
     args.residual = 'gated'
     args.expname = ''
     args.load = r'C:\Users\justjo\PycharmProjects\BNAF_tensorflow_eager\checkpoint\corn_layers1_h12_flows6_resize0.25_boxsize0.1_gated_2019-08-25-22-18-30'
-    args.save = True
     args.tensorboard = 'tensorboard'
-    args.early_stopping = 15
-    args.maxiter = 5000
-    args.factr = 1E1
-    args.regL2 = -1
-    args.regL1 = -1
-    args.manualSeed = None
-    args.manualSeedw = None
-    args.momentum = 0.9  ## batch norm momentum
-    args.prefetch_size = 10  # data pipeline prefetch buffer size
-    args.parallel = 16  # data pipeline parallel processes
     args.img_size = 0.25;  ## resize img between 0 and 1
     args.preserve_aspect_ratio = True;  ##when resizing
     args.rand_box = 0.1  ##relative size of random box from image
     args.spacing = 1
-
-    args.path = os.path.join('checkpoint', '{}{}_layers{}_h{}_flows{}_resize{}_boxsize{}{}_{}'.format(
-        args.expname + ('_' if args.expname != '' else ''),
-        args.dataset, args.layers, args.hidden_dim, args.flows, args.img_size, args.rand_box, '_' + args.residual if args.residual else '',
-        str(datetime.datetime.now())[:-7].replace(' ', '-').replace(':', '-')))
+    args.vh = 1  # 0 =no, 1=yes
 
     print('Loading dataset..')
+    trainval = glob.glob(r'D:\GQC_Images\GQ_Images\Corn_2017_2018/*.png')
+    train_data = np.vstack([np.expand_dims(img_load(x, args), axis=0) for x in trainval])
+    cont_data = glob.glob(r'D:\GQC_Images\GQ_Images\test_images_broken/*.png')
+    cont_data = np.vstack([np.expand_dims(img_load(x, args), axis=0) for x in cont_data])
 
-    fnames = glob.glob('data/GQ_Images/*.png')
+    if args.vh:
+        args.vh = np.load(args.path + '/vh.npy', args.vh)
 
-    ##set n_dims
-    get_dims(fnames[0], args)
-
-    if args.save and not args.load:
-        print('Creating directory experiment..')
-        os.mkdir(args.path)
-        with open(os.path.join(args.path, 'args.json'), 'w') as f:
-            json.dump(str(args.__dict__), f, indent=4, sort_keys=True)
+    args.rand_box_size = np.int(train_data[0].shape[0] * args.rand_box_init)
+    args.rand_box = np.array([args.rand_box_size, args.rand_box_size, 3])
+    args.n_dims = np.prod(args.rand_box)
 
     print('Creating BNAF model..')
     with tf.device(args.device):
         model = create_model(args, verbose=True)
 
-    ### debug
-    # data_loader_train_ = tf.contrib.eager.Iterator(data_loader_train)
-    # x = data_loader_train_.get_next()
-    # a = model(x)
-
-    ## tensorboard and saving
-    writer = tf.summary.create_file_writer(os.path.join(args.tensorboard, args.load or args.path))
-    writer.set_as_default()
-    tf.compat.v1.train.get_or_create_global_step()
-
-    global_step = tf.compat.v1.train.get_global_step()
-    global_step.assign(0)
-
     root = None
-    args.start_epoch = 0
-
     print('Creating optimizer..')
     with tf.device(args.device):
         optimizer = tf.optimizers.Adam()
     root = tf.train.Checkpoint(optimizer=optimizer,
                                model=model,
-                               optimizer_step=tf.compat.v1.train.get_global_step())
+                               optimizer_step=tf.compat.v1.train.get_or_create_global_step())
 
     if args.load:
         load_model(args, root, load_start_epoch=True)
 
-    print('Creating scheduler..')
-    # use baseline to avoid saving early on
-    scheduler = EarlyStopping(model=model, patience=args.early_stopping, args=args, root=root)
-
     heat_map_func = functools.partial(compute_log_p_x, model=model)
 
     heat_map = []
-    fnames = glob.glob('data/GQ_Images/test_images_broken/*.png')
-    fnames = glob.glob('data/GQ_Images/*.png')
-
     heat_map.extend(img_heatmap(heat_map_func, f, args) for f in fnames)
     heatmap_ = np.array(heat_map)
 
